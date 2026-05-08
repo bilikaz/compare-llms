@@ -70,6 +70,47 @@ For each panel during streaming:
 
 Summary table aggregates across all rounds: avg rating, total chars / tokens / time, chars/s, tokens/s. Winner is whichever side has the higher average rating.
 
+## Test prompts
+
+The [tests/](tests/) directory contains a curated benchmark suite of prompts paired with binary pass/fail rubrics. Each file has the prompt to feed into both panels and a scoring sheet you can use to rate the outputs objectively (rather than just eyeballing them). All prompts ask for a single self-contained HTML file — perfect for the sandboxed iframe preview.
+
+### Easy — small / weak / quantized models
+
+For models that flunk the harder tiers with all zeros. Each easy test mirrors a harder one stripped to ~30% complexity (static where the original was animated, single-object where the original had many). Tests stack additively — `paint` is `tictactoe` + 1, which is `miner` + 1.
+
+| Test | Checks |
+|---|---|
+| [tests/miner.md](tests/miner.md) | 48 — bundled 6-task suite (clock at 10:10, solar lineup, single ball, click-to-burst, pattern grid, static maze), 8 checks each |
+| [tests/tictactoe.md](tests/tictactoe.md) | +8 → 56 total — turn-based state, win detection, end-of-game lockout |
+| [tests/paint.md](tests/paint.md) | +8 → 64 total — freehand mouse drag (`mousedown`/`mousemove`/`mouseup` coordination) |
+
+### Medium — mid-tier models
+
+| Test | Checks |
+|---|---|
+| [tests/clock.md](tests/clock.md) | 13 — geometric analog clock, canvas geometry, trig, real-time tick |
+| [tests/solar.md](tests/solar.md) | 15 — animated solar system orrery, proportional sizing, orbital math, hover, layered animation |
+| [tests/game.md](tests/game.md) | 15, deterministic — Conway's Game of Life, double-buffered updates, exact-rule correctness |
+| [tests/maze.md](tests/maze.md) | 15, deterministic — maze generator + solver + player, algorithmic + pathfinding correctness |
+
+### Hard — frontier models
+
+| Test | Checks |
+|---|---|
+| [tests/balls.md](tests/balls.md) | 15 — bouncing balls physics sandbox, collision response, mouse drag, numerical stability |
+| [tests/fireworks.md](tests/fireworks.md) | 15 — fireworks particle system, lifecycle, two-stage state machines, alpha decay, perf at scale |
+
+### Visual reasoning — boss tier
+
+Pure spatial reasoning over SVG primitives (`<circle>`, `<rect>`, `<ellipse>`, `<polygon>`, `<path>`, `<line>`). No emoji, no images, no clip-art. This is where most models humiliate themselves.
+
+| Test | Checks |
+|---|---|
+| [tests/fish.md](tests/fish.md) | 15, lighter — SVG underwater scene, ~¼ the output size of pasture, 2 subjects + bubbles + seaweed |
+| [tests/animals.md](tests/animals.md) | 20, brutal — SVG pasture scene with 8 recognizable animals from primitives |
+
+Workflow: paste a test's prompt block into the prompt input, generate on both sides, then walk the rubric checkboxes to assign a 1–10 rating per panel. Run the same prompt across rounds to compare model variants, quantizations, or sampling settings.
+
 ## Browser security & limitations
 
 - **API keys live in `localStorage`.** Fine for personal/local use; not for shared machines or kiosks. Clear your browser storage to reset.
