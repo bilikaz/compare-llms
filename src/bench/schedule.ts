@@ -1,79 +1,67 @@
 import type { BenchBatch, BenchSession, ModelConfig } from '../types';
-import { TESTS } from '../tests';
-import type { Difficulty } from '../tests';
 
 // ── Standardized schedule ─────────────────────────────────────────────────
-// boss   c=1 ×6,  c=2 ×4    (14 slots, 7/test for 2 tests)
-// hard   c=3 ×2,  c=4 ×2    (14)
-// medium c=6 ×2,  c=8 ×2    (28)
-// easy   c=12 ×2, c=16 ×2   (56)
-// = 112 runs per session.
+// Hand-built batch list. Every test appears exactly 7 times. Order:
+//   easy   c=16 ×2, c=12 ×2   (56 slots, 8 tests × 7)
+//   medium c=8  ×2, c=6  ×2   (28 slots, 4 tests × 7)
+//   hard   c=4  ×2, c=3  ×2   (14 slots, 2 tests × 7)
+//   boss   c=2  ×4, c=1  ×6   (14 slots, 2 tests × 7)
+// = 22 batches, 112 runs.
 //
-// Within each (tier, c) phase we generate `repeats` batches of size c, filling
-// each batch from the tier's tests so that:
-//   1. distinct tests are preferred — only duplicate when c > tier-test-count
-//   2. across the whole phase, runs per test are balanced as evenly as possible
+// Easy tier runs first (high c, short outputs) so completed runs land fast and
+// the user can rate them while the slower low-c boss phases keep grinding.
 //
-// Across the entire session, this yields exactly 7 runs per test (animals 7,
-// fish 7, balls 7, fireworks 7, all 4 medium tests 7, all 8 easy tests 7).
+// Per-test counts are achieved by construction: each phase pair (c=N×2, c=M×2)
+// is balanced so every test in the tier ends with the same per-tier total.
+// If you add/remove a test from a tier, rebuild this list — there is no
+// algorithm to fall back on.
 
-interface PhaseSpec { c: number; repeats: number }
+const STANDARDIZED_BATCHES: string[][] = [
+  // ── easy (8 tests × 7 = 56 slots) ──────────────────────────────────────
+  // c=16 ×2 — each test 2× per batch (4× across both)
+  ['easy-ball', 'easy-burst', 'easy-clock', 'easy-grid', 'easy-lineup', 'easy-paint', 'easy-tictactoe', 'easy-walker',
+   'easy-ball', 'easy-burst', 'easy-clock', 'easy-grid', 'easy-lineup', 'easy-paint', 'easy-tictactoe', 'easy-walker'],
+  ['easy-ball', 'easy-burst', 'easy-clock', 'easy-grid', 'easy-lineup', 'easy-paint', 'easy-tictactoe', 'easy-walker',
+   'easy-ball', 'easy-burst', 'easy-clock', 'easy-grid', 'easy-lineup', 'easy-paint', 'easy-tictactoe', 'easy-walker'],
+  // c=12 ×2 — together each test +3. Batch 1 doubles ball/burst/clock/grid;
+  // batch 2 doubles lineup/paint/tictactoe/walker. Final easy total = 7 each.
+  ['easy-ball', 'easy-burst', 'easy-clock', 'easy-grid', 'easy-lineup', 'easy-paint', 'easy-tictactoe', 'easy-walker',
+   'easy-ball', 'easy-burst', 'easy-clock', 'easy-grid'],
+  ['easy-ball', 'easy-burst', 'easy-clock', 'easy-grid', 'easy-lineup', 'easy-paint', 'easy-tictactoe', 'easy-walker',
+   'easy-lineup', 'easy-paint', 'easy-tictactoe', 'easy-walker'],
 
-const STANDARDIZED: Record<Difficulty, PhaseSpec[]> = {
-  easy:   [{ c: 12, repeats: 2 }, { c: 16, repeats: 2 }],
-  medium: [{ c: 6,  repeats: 2 }, { c: 8,  repeats: 2 }],
-  hard:   [{ c: 3,  repeats: 2 }, { c: 4,  repeats: 2 }],
-  boss:   [{ c: 1,  repeats: 6 }, { c: 2,  repeats: 4 }],
-};
+  // ── medium (4 tests × 7 = 28 slots) ────────────────────────────────────
+  // c=8 ×2 — each test 2× per batch (4× across both)
+  ['medium-clock', 'medium-game', 'medium-maze', 'medium-solar',
+   'medium-clock', 'medium-game', 'medium-maze', 'medium-solar'],
+  ['medium-clock', 'medium-game', 'medium-maze', 'medium-solar',
+   'medium-clock', 'medium-game', 'medium-maze', 'medium-solar'],
+  // c=6 ×2 — together each test +3. Batch 1 doubles clock/game; batch 2 doubles maze/solar.
+  ['medium-clock', 'medium-game', 'medium-maze', 'medium-solar', 'medium-clock', 'medium-game'],
+  ['medium-clock', 'medium-game', 'medium-maze', 'medium-solar', 'medium-maze', 'medium-solar'],
 
-// Order tiers heaviest to lightest so the slow / low-c phases run first while
-// the user is most likely watching. Reversing this is also reasonable; this
-// ordering makes the early data the most "novel" (manual review starts there).
-const TIER_ORDER: Difficulty[] = ['boss', 'hard', 'medium', 'easy'];
+  // ── hard (2 tests × 7 = 14 slots) ──────────────────────────────────────
+  // c=4 ×2 — each test 2× per batch (4× across both)
+  ['hard-balls', 'hard-fireworks', 'hard-balls', 'hard-fireworks'],
+  ['hard-balls', 'hard-fireworks', 'hard-balls', 'hard-fireworks'],
+  // c=3 ×2 — together each test +3. Batch 1 doubles balls; batch 2 doubles fireworks.
+  ['hard-balls', 'hard-fireworks', 'hard-balls'],
+  ['hard-fireworks', 'hard-balls', 'hard-fireworks'],
 
-function shuffled<T>(xs: T[], seed: () => number): T[] {
-  const a = xs.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(seed() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-// LCG seeded so generated schedules are reproducible per session id.
-function rng(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    return s / 0x100000000;
-  };
-}
-
-// Fill `count` slots with the given test ids, preferring distinct tests within
-// a single batch and rotating through the test list across batches so the
-// per-test count comes out balanced.
-function fillSlots(tests: string[], count: number, rand: () => number): string[] {
-  const slots: string[] = [];
-  const order = shuffled(tests, rand);
-  if (count <= tests.length) {
-    return order.slice(0, count);
-  }
-  // c > tier-test-count: cycle, but jitter the cycle start each batch.
-  for (let i = 0; i < count; i++) slots.push(order[i % tests.length]);
-  return slots;
-}
-
-function generatePhase(tests: string[], spec: PhaseSpec, rand: () => number, startIndex: number): BenchBatch[] {
-  const out: BenchBatch[] = [];
-  for (let r = 0; r < spec.repeats; r++) {
-    out.push({
-      id: crypto.randomUUID(),
-      index: startIndex + r,
-      tests: fillSlots(tests, spec.c, rand),
-    });
-  }
-  return out;
-}
+  // ── boss (2 tests × 7 = 14 slots) ──────────────────────────────────────
+  // c=2 ×4 — each test 1× per batch (4× across all four)
+  ['boss-animals', 'boss-fish'],
+  ['boss-animals', 'boss-fish'],
+  ['boss-animals', 'boss-fish'],
+  ['boss-animals', 'boss-fish'],
+  // c=1 ×6 — alternate animals/fish, 3× each.
+  ['boss-animals'],
+  ['boss-fish'],
+  ['boss-animals'],
+  ['boss-fish'],
+  ['boss-animals'],
+  ['boss-fish'],
+];
 
 export interface BuiltSchedule {
   id: string;
@@ -81,23 +69,14 @@ export interface BuiltSchedule {
   batches: BenchBatch[];
 }
 
-// Assemble a Standardized schedule from the current TESTS list.
-export function buildStandardizedSchedule(seed: number = Date.now() & 0xffffffff): BuiltSchedule {
-  const rand = rng(seed);
-  const byTier: Record<Difficulty, string[]> = { easy: [], medium: [], hard: [], boss: [] };
-  for (const t of TESTS) byTier[t.difficulty].push(t.id);
-
-  const batches: BenchBatch[] = [];
-  let cursor = 0;
-  for (const tier of TIER_ORDER) {
-    const tests = byTier[tier];
-    if (!tests.length) continue;
-    for (const spec of STANDARDIZED[tier]) {
-      const phase = generatePhase(tests, spec, rand, cursor);
-      cursor += phase.length;
-      batches.push(...phase);
-    }
-  }
+// Materialize the hand-built batch list into BenchBatch records (fresh ids per
+// session so reruns don't collide in IndexedDB).
+export function buildStandardizedSchedule(): BuiltSchedule {
+  const batches: BenchBatch[] = STANDARDIZED_BATCHES.map((tests, index) => ({
+    id: crypto.randomUUID(),
+    index,
+    tests: [...tests],
+  }));
   return { id: 'standardized', label: 'Standardized 112-run', batches };
 }
 

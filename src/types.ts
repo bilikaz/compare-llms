@@ -72,6 +72,10 @@ export interface CharSample { t: number; chars: number }
 
 export type BenchRunStatus = 'pending' | 'streaming' | 'done' | 'error' | 'aborted';
 
+// Persisted Test shape. Intentionally lean: no per-tick char-samples array —
+// those balloon a 112-run session to multi-GB and crash Firefox. Throughput
+// stats are computed once at Run completion (using transient live samples)
+// and aggregated as scalars on the parent Batch.
 export interface BenchRun {
   id: string;
   sessionId: string;
@@ -88,13 +92,38 @@ export interface BenchRun {
   usage: StreamUsage;
   durationMs: number;     // 0 while streaming, set on completion
   error?: string;
-  charSamples: CharSample[]; // sampled every ~250ms while streaming
-  // Derived/cached metrics, computed at completion:
-  avgChs: number;          // avg chars/sec across the run
-  peakChs: number;         // max 1s sliding window chars/sec
+  // Derived/cached per-test metric, kept for legacy display:
+  avgChs: number;          // chars / second across this single test
   // Voting (filled later by judge — may stay empty until reviewed):
   rubricVotes?: RubricVotes;
   ratedAt?: number;        // ms epoch of most-recent vote change; absent = unrated
+}
+
+// Per-c aggregated scalars persisted on the BenchSession. Filled by the
+// engine (Bench.ts) as Runs complete — Batch ingests one RunSummary at a
+// time and stores running totals only. No arrays, no per-second log.
+export interface BatchTotals {
+  c: number;
+  sumWindowMs: number;     // total time at "all N producing" across runs
+  sumWindowChars: number;  // chars produced inside those windows
+  runCount: number;        // Runs at this c that completed successfully
+  peakChs: number;         // max 1s aggregate ch/s ever seen at this c
+  minChs: number;          // min ditto, excluding zero-rate ticks (0 = no data)
+  doneTestCount: number;
+}
+
+// Per-tier (easy / medium / hard / boss) aggregated scalars persisted on
+// the BenchSession. Filled by the engine as individual Tests land — Tier
+// ingests one Test at a time and tracks rubric scores + raw test totals.
+export interface TierTotals {
+  tier: 'easy' | 'medium' | 'hard' | 'boss';
+  doneTestCount: number;
+  fullyRatedTestCount: number;
+  passChecks: number;
+  failChecks: number;
+  unratedChecks: number;
+  totalChecks: number;
+  sumDurationMs: number;
 }
 
 export type BenchSessionStatus = 'idle' | 'running' | 'paused' | 'completed' | 'aborted' | 'interrupted';
@@ -109,6 +138,13 @@ export interface BenchSession {
   completedAt?: number;
   status: BenchSessionStatus;
   currentBatchIndex: number;   // 0-based; equals batches.length when complete
+  // Per-c aggregates filled by the engine as Runs complete. Lets us
+  // rebuild PerCStatsCard rows on load without re-walking the (now stripped)
+  // sample history.
+  batchTotals?: BatchTotals[];
+  // Per-tier aggregates filled by the engine as Tests land. Powers
+  // RatingSummary without re-walking individual Tests on every render.
+  tierTotals?: TierTotals[];
 }
 
 // A single batch in a session: a list of test ids that run in parallel.

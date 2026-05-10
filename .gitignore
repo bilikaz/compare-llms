@@ -15,3 +15,8 @@ dist
 
 # Scripts
 *.sh
+
+# Local deployment config (Docker + Traefik). Treat as private — env
+# files, LE cert state, and host-specific tweaks live here.
+docker/
+.dockerignore

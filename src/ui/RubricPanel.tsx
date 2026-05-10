@@ -54,6 +54,11 @@ export interface RubricPanelProps {
   votesSingle?: RubricVotes | undefined;
   onVote?: (side: 'A' | 'B', checkId: string, vote: RubricVote | undefined) => void;
   onVoteSingle?: (checkId: string, vote: RubricVote | undefined) => void;
+  // Bulk "set all" handlers — when present, the panel uses them instead of
+  // looping per-check onVote* calls. Lets the data layer batch one mutation
+  // + one persist + one notify rather than firing N writes.
+  onVoteAll?: (side: 'A' | 'B', vote: RubricVote) => void;
+  onVoteAllSingle?: (vote: RubricVote) => void;
   accentA?: string;
   accentB?: string;
   accent?: string; // single-side accent (Bench)
@@ -64,6 +69,7 @@ export function RubricPanel(props: RubricPanelProps) {
     checks,
     votesA, votesB, votesSingle,
     onVote, onVoteSingle,
+    onVoteAll, onVoteAllSingle,
     accentA = 'var(--c-accent-a)',
     accentB = 'var(--c-accent-b)',
     accent = 'var(--c-accent-bench)',
@@ -92,6 +98,16 @@ export function RubricPanel(props: RubricPanelProps) {
   const aPass = rows.filter((r) => r.voteA === 'pass').length;
   const bPass = rows.filter((r) => r.voteB === 'pass').length;
   const sPass = rows.filter((r) => r.voteSingle === 'pass').length;
+
+  const setAll = (side: 'A' | 'B' | 'single', v: RubricVote) => {
+    if (side === 'single') {
+      if (onVoteAllSingle) { onVoteAllSingle(v); return; }
+      for (const c of checks) onVoteSingle?.(c.id, v);
+      return;
+    }
+    if (onVoteAll) { onVoteAll(side, v); return; }
+    for (const c of checks) onVote?.(side, c.id, v);
+  };
 
   return (
     <Card style={{ padding: 'var(--pad-card)' }}>
@@ -122,13 +138,16 @@ export function RubricPanel(props: RubricPanelProps) {
           gap: 14,
           padding: '0 0 6px',
           borderBottom: '1px solid var(--c-border-2)',
+          alignItems: 'center',
         }}
       >
         <ColHead>criterion</ColHead>
-        {single ? <ColHead>vote</ColHead> : (
+        {single ? (
+          <BulkBtns onAll={(v) => setAll('single', v)} accentPass={accent} />
+        ) : (
           <>
-            <ColHead color={accentA}>A</ColHead>
-            <ColHead color={accentB}>B</ColHead>
+            <BulkBtns label="A" onAll={(v) => setAll('A', v)} accentPass={accentA} />
+            <BulkBtns label="B" onAll={(v) => setAll('B', v)} accentPass={accentB} />
           </>
         )}
       </div>
@@ -226,6 +245,52 @@ export function RubricPanel(props: RubricPanelProps) {
         </div>
       )}
     </Card>
+  );
+}
+
+function BulkBtns({
+  label,
+  onAll,
+  accentPass,
+}: {
+  label?: string;
+  onAll: (v: RubricVote) => void;
+  accentPass: string;
+}) {
+  const btn = (text: string, bg: string, fg: string, v: RubricVote) => (
+    <button
+      onClick={() => onAll(v)}
+      title={`Set all ${v === 'pass' ? '✓' : '✗'}`}
+      style={{
+        width: 26,
+        height: 22,
+        borderRadius: 4,
+        border: '1px solid var(--c-border-2)',
+        background: bg,
+        color: fg,
+        fontFamily: 'var(--font-mono)',
+        fontSize: 'var(--fs-sm)',
+        fontWeight: 600,
+        cursor: 'pointer',
+      }}
+    >
+      {text}
+    </button>
+  );
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+      <span
+        style={{
+          fontFamily: 'var(--font-mono)',
+          fontSize: 'var(--fs-xs)',
+          color: 'var(--c-text-3)',
+        }}
+      >
+        all{label ? ` ${label}` : ''}
+      </span>
+      {btn('✓', accentPass, '#0a0a0a', 'pass')}
+      {btn('✗', 'var(--c-fail)', '#fee2e2', 'fail')}
+    </div>
   );
 }
 

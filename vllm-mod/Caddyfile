@@ -1,0 +1,23 @@
+{
+  # Plain TLS with our own openssl-generated cert; no automation needed.
+  auto_https off
+}
+
+# HTTPS reverse proxy. The cert is issued from a local CA we generate in
+# run.sh (openssl) with the box's IPs in SANs. Browsers that trust our
+# CA root accept it without warnings; the trust endpoint below hands out
+# the root.
+:__LISTEN_PORT__ {
+  tls __CERT__ __KEY__
+  reverse_proxy __UPSTREAM__ {
+    flush_interval -1   # don't buffer SSE streams from /v1/chat/completions
+  }
+}
+
+# Plain-HTTP endpoint serving the local CA root cert. Workstations curl this
+# once to bootstrap trust — without it you'd need the cert to download the
+# cert (chicken & egg). No other content is exposed here.
+http://:__TRUST_PORT__ {
+  root * __PUBLIC_PKI__
+  file_server
+}

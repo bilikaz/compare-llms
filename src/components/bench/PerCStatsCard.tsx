@@ -1,15 +1,22 @@
 import type { MetricUnit } from '../../types';
-import type { PerCAggregate } from '../../bench/runner';
-import { Card, Sparkline } from '../../ui/primitives';
+import { Card } from '../../ui/primitives';
 import { ACCENT_BENCH, ColHead } from './utils';
 
-// Each row carries the aggregate (`got`) when at least one run at that c-level
-// has completed, plus the total `expected` count for that c so we can show
-// "n / N" progress for phases that are partially done or haven't started.
+// Lean per-c row — populated by Bench from its Batch[] + schedule. Got is
+// undefined until the first Run at that c finishes successfully (no live
+// data sneaks in here; all values are scalar accumulators).
 export interface PerCRow {
   c: number;
-  expected: number;
-  got?: PerCAggregate;
+  expectedRuns: number;     // total scheduled Runs at this c
+  expectedTests: number;    // total scheduled Test slots at this c
+  got?: {
+    runCount: number;       // completed Runs at this c
+    doneTestCount: number;  // completed Tests at this c
+    sumWindowMs: number;    // for wall-clock-ish display
+    avgChs: number;
+    peakChs: number;
+    minChs: number;
+  };
 }
 
 interface Props {
@@ -17,12 +24,12 @@ interface Props {
   unit: MetricUnit;
 }
 
-const COLUMNS = '60px 90px 90px 110px 90px 110px';
+const COLUMNS = '60px 90px 90px 110px 80px 80px';
 
 export function PerCStatsCard({ rows, unit }: Props) {
   const headers = unit === 'tokens'
-    ? ['level', 'progress', 'wall-clock', 'avg tok/s', 'peak', 'throughput']
-    : ['level', 'progress', 'wall-clock', 'avg ch/s', 'peak', 'throughput'];
+    ? ['level', 'progress', 'window', 'avg tok/s', 'peak', 'min']
+    : ['level', 'progress', 'window', 'avg ch/s', 'peak', 'min'];
   return (
     <Card style={{ padding: 'var(--pad-card)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
@@ -68,10 +75,10 @@ export function PerCStatsCard({ rows, unit }: Props) {
 
 function Row({ row, unit }: { row: PerCRow; unit: MetricUnit }) {
   const { got } = row;
-  const live = !!got && got.completedRuns < got.totalRuns;
+  const liveTier = !!got && got.doneTestCount < row.expectedTests;
   const empty = !got;
-  // For tokens we estimate from chars÷4 since runs persist chars-per-second
-  // rather than tokens-per-second; the per-c aggregate inherits that estimate.
+  // For tokens we estimate from chars÷4 since the engine stores per-c
+  // throughput in characters; the per-c aggregate inherits that estimate.
   const fmtAvg = (v: number) => unit === 'tokens' ? `~${(v / 4).toFixed(0)}` : v.toFixed(0);
   return (
     <div
@@ -85,43 +92,27 @@ function Row({ row, unit }: { row: PerCRow; unit: MetricUnit }) {
         fontFamily: 'var(--font-mono)',
         fontSize: 'var(--fs-sm)',
         opacity: empty ? 0.5 : 1,
-        background: live ? 'rgba(96,165,250,0.04)' : 'transparent',
+        background: liveTier ? 'rgba(96,165,250,0.04)' : 'transparent',
       }}
     >
       <span style={{ color: ACCENT_BENCH, fontWeight: 600 }}>c={row.c}</span>
       <span
         style={{
-          color: got && got.completedRuns === row.expected ? 'var(--c-accent-a)' : 'var(--c-text-2)',
+          color: got && got.doneTestCount === row.expectedTests
+            ? 'var(--c-accent-a)'
+            : 'var(--c-text-2)',
         }}
       >
-        {empty ? `— / ${row.expected}` : `${got!.completedRuns} / ${row.expected}`}
+        {empty ? `— / ${row.expectedTests}` : `${got!.doneTestCount} / ${row.expectedTests}`}
       </span>
       <span style={{ color: 'var(--c-text-2)' }}>
-        {got ? `${(got.wallClockMs / 1000).toFixed(1)}s` : '—'}
+        {got ? `${(got.sumWindowMs / 1000).toFixed(1)}s` : '—'}
       </span>
-      <span style={{ color: 'var(--c-text)', fontWeight: live ? 600 : 400 }}>
+      <span style={{ color: 'var(--c-text)', fontWeight: liveTier ? 600 : 400 }}>
         {got ? fmtAvg(got.avgChs) : '—'}
       </span>
       <span style={{ color: 'var(--c-text-2)' }}>{got ? fmtAvg(got.peakChs) : '—'}</span>
-      {empty ? (
-        <span style={{ color: 'var(--c-text-4)' }}>—</span>
-      ) : (
-        // Synthetic ramp through avg → peak. Replace with real per-c samples
-        // when we start retaining batch-level char timeseries on disk.
-        <Sparkline
-          width={100}
-          height={18}
-          data={[
-            got!.avgChs * 0.5,
-            got!.avgChs * 0.7,
-            got!.avgChs * 0.8,
-            got!.avgChs,
-            got!.peakChs,
-            got!.avgChs * 0.9,
-          ]}
-          peak={live}
-        />
-      )}
+      <span style={{ color: 'var(--c-text-2)' }}>{got ? fmtAvg(got.minChs) : '—'}</span>
     </div>
   );
 }

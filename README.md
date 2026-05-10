@@ -18,11 +18,16 @@ The top-level header has a `Compare / Benchmark` toggle. Each mode keeps its own
 
 ### Benchmark — single model
 - Configure one model
-- Pick a schedule — Standardized 112-run preset, or a custom batch list
+- Pick a schedule — Standardized 112-run preset, or build a custom one (tier-filtered test pills, current-batch composer, drag-to-reorder batches, save/load named presets)
 - Click `▶ start session`. The runner walks each batch sequentially, filling its slots in parallel, sampling chars-per-second every 250 ms
-- Live phase header (sparkline + progress bar), slot grid, per-c stats card, completed-runs list
+- Phase header shows aggregated chars · thinking · ch/s across live slots + sparkline + progress bar
+- Per-c stats card breaks throughput out per concurrency level — `avg / peak / min ch/s` (or tok/s) computed only from the window where all N slots were truly in flight (the moment one finishes, the batch is no longer at concurrency N, so it stops counting)
+- Completed-runs list with filter (all / unrated / rated) and sort (recent / oldest / fastest / slowest / highest / lowest)
 - Click any completed run to open it in a review overlay (full-size preview + rubric votes) — the running batch keeps streaming in the background
+- Stop mid-session and `▶ resume from batch N` later; past sessions list on the landing screen lets you reopen, resume, or delete any prior session
 - Everything persists to IndexedDB; reload-safe
+
+> **Running vLLM yourself?** Browsers cap HTTP/1.1 at 6 concurrent requests per origin, so any benchmark above c=6 is throttled by the network instead of the model. The [vllm-mod/](vllm-mod/) folder is a drop-in mod for [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) that puts an HTTP/2 + TLS reverse proxy (Caddy) in front of vLLM with one `--apply-mod` and unblocks honest c=N benchmarking. See [vllm-mod/README.md](vllm-mod/README.md).
 
 #### Standardized 112-run schedule
 
@@ -30,10 +35,12 @@ Each test runs exactly **7 times** across the session, distributed at multiple c
 
 | Tier   | Schedule              | Slots | Per-test |
 |--------|-----------------------|------:|---------:|
-| boss   | c=1 ×6, c=2 ×4        |    14 |    7     |
-| hard   | c=3 ×2, c=4 ×2        |    14 |    7     |
-| medium | c=6 ×2, c=8 ×2        |    28 |    7     |
-| easy   | c=12 ×2, c=16 ×2      |    56 |    7     |
+| easy   | c=16 ×2, c=12 ×2      |    56 |    7     |
+| medium | c=8 ×2, c=6 ×2        |    28 |    7     |
+| hard   | c=4 ×2, c=3 ×2        |    14 |    7     |
+| boss   | c=2 ×4, c=1 ×6        |    14 |    7     |
+
+Easy tiers run first (high `c`, short outputs) so completed runs land fast and you can rate them while the slower low-`c` boss phases finish in the background.
 
 **Total: 112 runs per session.** Throughput is measured at each `c` level so you can see how the model's rate scales (or saturates) under load.
 
@@ -152,7 +159,7 @@ Every test includes a `Layout stays usable when the window is resized` check —
 ## Storage
 
 - **`localStorage`** — model configs (`configA`, `configB`, `configBench`), UI preferences (mode, units, view, show-config). Small, sync.
-- **IndexedDB** — round history, bench sessions, bench runs (with `charSamples` timeseries), saved custom schedules. Bigger, async.
+- **IndexedDB** — round history, bench sessions (incl. interrupted ones, resumable from `currentBatchIndex`), bench runs (with `charSamples` timeseries), saved custom schedules. Bigger, async.
 - **Auto-migration** — first load reads the old `llm-compare-v1` localStorage blob and copies any rounds into IndexedDB before clearing them from localStorage. Configs survive the migration.
 - **Export** — both modes' header buttons download a self-contained JSON file with configs, runs, metrics (per-side `outputChars`, `thinkingChars`, `outputTokens`, `thinkingTokens`, `avgChs`, `peakChs`, `tokensPerSec`, `charsPerSec`, `charSamples`), and rubric votes / ratings.
 
@@ -162,7 +169,7 @@ Every test includes a `Layout stays usable when the window is resized` check —
 - **Sandboxed previews.** Scripts can run but can't reach the parent app or its storage.
 - **Mixed content.** HTTPS deployments can't talk to HTTP-only LLM servers — browsers block it. Use HTTPS endpoints in production.
 - **CORS.** OpenAI-compatible servers usually allow `*`. vLLM, llama.cpp, Ollama, and the major hosted providers work directly. Anthropic uses the dangerous-direct-browser-access header (already wired in).
-- **In-browser concurrency.** At `c=16` (easy phase) we have 16 parallel HTTP requests to the same host. HTTP/2 servers (modern vLLM, OpenAI) handle this fine; HTTP/1.1 servers will queue at the network layer and the throughput readings will reflect that queue, not the model.
+- **In-browser concurrency.** At `c=16` (easy phase) we have 16 parallel HTTP requests to the same host. HTTP/2 servers (modern vLLM, OpenAI, Anthropic, Gemini) handle this fine; HTTP/1.1 servers will queue at the network layer (browsers cap concurrent HTTP/1.1 at 6 per origin) and the throughput readings will reflect that queue, not the model. For self-hosted vLLM the [vllm-mod/](vllm-mod/) drop-in puts an HTTP/2 reverse proxy in front (see [vllm-mod/README.md](vllm-mod/README.md)).
 
 ## Tech
 
@@ -176,8 +183,8 @@ src/
 │   ├── sse.ts                         # minimal SSE parser
 │   └── index.ts                       # streamModel() / listModels() / defaultBaseUrl()
 ├── bench/
-│   ├── schedule.ts                    # standardized + custom batch generator
-│   └── runner.ts                      # batch loop, 250 ms char sampling, aggregateByC
+│   ├── schedule.ts                    # hand-built standardized batch list (every test exactly 7×) + custom builder helper
+│   └── runner.ts                      # batch loop, 250 ms char sampling, windowed aggregateByC
 ├── tests.ts                           # YAML frontmatter parser for tests/*.md
 ├── db.ts                              # IndexedDB wrapper + migration
 ├── storage.ts                         # localStorage (configs + UI prefs)
@@ -204,17 +211,21 @@ src/
     │   ├── utils.ts                   # computeSummary, fmtK
     │   └── exportRounds.ts            # download rounds JSON
     └── bench/
-        ├── SchedulePreview.tsx        # idle: schedule preview + start button
-        ├── PhaseHeader.tsx            # active phase metrics + sparkline + stop
-        ├── SlotGrid.tsx               # live slot panes
-        ├── PerCStatsCard.tsx          # throughput stats per c-level
+        ├── SchedulePreview.tsx        # idle: standardized schedule preview (tier groups, expand to per-batch test list) + Standardized/Custom toggle + start
+        ├── CustomBuilder.tsx          # idle: custom schedule composer (tier-filtered pills, current batch, drag-reorder all-batches list, save/load presets)
+        ├── PastSessionsList.tsx       # idle: prior sessions table — open / resume / delete
+        ├── PhaseHeader.tsx            # active phase metrics (aggregate chars/tokens/throughput) + sparkline + stop / new / resume
+        ├── SlotGrid.tsx               # live slot panes (chars: N (M 💡) X ch/s row, mini iframe preview)
+        ├── PerCStatsCard.tsx          # per-c throughput: avg / peak / min ch/s computed in the windowed concurrency interval
         ├── CompletedList.tsx          # filter / sort + run rows
         ├── ReviewOverlay.tsx          # review pane + rubric for one run
         ├── exportSession.ts           # download session JSON
-        └── utils.tsx                  # ColHead, fmtDuration, ACCENT_BENCH
+        └── utils.tsx                  # ColHead, fmtDuration, metricsForRun, ACCENT_BENCH
 
-docs/
-└── ui.md                              # UX specification (every screen, state, interaction)
+vllm-mod/                              # drop-in mod for eugr/spark-vllm-docker
+├── Caddyfile                          # template for Caddy reverse proxy
+├── run.sh                             # invoked by launch-cluster.sh inside the container
+└── README.md                          # full how-and-why
 ```
 
 ## Build

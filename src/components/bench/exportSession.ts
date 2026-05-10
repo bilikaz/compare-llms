@@ -21,6 +21,7 @@ export function buildSessionExport(session: BenchSession, runs: BenchRun[]) {
       startedAt: new Date(session.startedAt).toISOString(),
       completedAt: session.completedAt ? new Date(session.completedAt).toISOString() : null,
       status: session.status,
+      batchTotals: session.batchTotals ?? [],
     },
     runs: runs.map((r) => {
       const t = findTest(r.testId);
@@ -46,8 +47,9 @@ export function buildSessionExport(session: BenchSession, runs: BenchRun[]) {
           outputTokens: r.usage.outputTokens ?? null,
           thinkingTokens: r.usage.thinkingTokens ?? null,
           avgChs: +r.avgChs.toFixed(2),
-          peakChs: +r.peakChs.toFixed(2),
-          charSamples: r.charSamples,
+          // peakChs / charSamples are no longer persisted per-test (they
+          // ballooned IDB into the GBs). Per-c peak / min ch/s are exported
+          // via session.batchTotals; the per-test sparkline data is gone.
         },
         rubric: t ? {
           score: passes,
