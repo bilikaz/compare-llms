@@ -9,8 +9,38 @@
 # the root.
 :__LISTEN_PORT__ {
   tls __CERT__ __KEY__
-  reverse_proxy __UPSTREAM__ {
-    flush_interval -1   # don't buffer SSE streams from /v1/chat/completions
+
+  # CORS so browser apps (compare-llms) can call this cross-origin. `defer`
+  # makes these headers apply to every response — including the 401 below,
+  # otherwise the browser can't even read the error.
+  header {
+    Access-Control-Allow-Origin  "{http.request.header.Origin}"
+    Access-Control-Allow-Methods "GET, POST, OPTIONS"
+    Access-Control-Allow-Headers "Authorization, Content-Type"
+    Access-Control-Max-Age       "86400"
+    Vary                         Origin
+    defer
+  }
+
+  # Preflight: browsers send OPTIONS without an Authorization header, so it
+  # must short-circuit BEFORE the bearer-token gate or every CORS request dies.
+  @preflight method OPTIONS
+  handle @preflight {
+    respond 204
+  }
+
+  # Authenticated traffic → vLLM. Bearer-token gate, same shape as
+  # vLLM's --api-key.
+  @authed header Authorization "Bearer __TOKEN__"
+  handle @authed {
+    reverse_proxy __UPSTREAM__ {
+      flush_interval -1   # don't buffer SSE streams from /v1/chat/completions
+    }
+  }
+
+  # Anything else: rejected before it touches the upstream.
+  handle {
+    respond "Unauthorized" 401
   }
 }
 
